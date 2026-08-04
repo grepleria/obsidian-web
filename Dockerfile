@@ -25,9 +25,17 @@ RUN apk add --no-cache bash unzip
 WORKDIR /build
 COPY . .
 
-# Pin the Obsidian renderer + LiveSync plugin at build time for reproducibility.
-# Empty = latest (upstream default). Set both when cutting a pinned image.
-ARG OBSIDIAN_MOBILE_VERSION=""
+# Obsidian renderer version. MUST default to the version this client is built
+# against — NOT "latest". src/client-mobile/obsidian-version.js pins
+# window.__owObsidianVersion, the Capacitor shim is written against that
+# bundle's internals, and the boot watchdog refuses to start a mismatched
+# renderer ("Obsidian X did not start. This version asks its host for a
+# startup acknowledgement that obsidian-web does not provide."). Building with
+# an empty value pulled 1.13.4 and produced exactly that failure screen in the
+# browser — the image looked healthy (nginx 200s, plugin+renderer served)
+# because the incompatibility only shows once Obsidian's own JS boots.
+# Bump ONLY together with the client-side support work + obsidian-version.js.
+ARG OBSIDIAN_MOBILE_VERSION="1.12.7"
 ARG SEED_LIVESYNC_VERSION=""
 ENV SEED_LIVESYNC_VERSION=${SEED_LIVESYNC_VERSION}
 
@@ -42,10 +50,28 @@ ENV SEED_LIVESYNC_VERSION=${SEED_LIVESYNC_VERSION}
 # is a CLI that requires a <path-to-app.js> argument and exits 1 without one.
 # (The patch list is empty today but aborts loudly if a future Obsidian version
 # breaks an expected match; that guard runs inside the update script.)
-RUN if [ -n "$OBSIDIAN_MOBILE_VERSION" ]; then \
+#
+# The version GUARD lives in this same RUN by necessity: the fetch script
+# REWRITES src/client-mobile/obsidian-version.js with whatever it downloaded,
+# so the committed value (what the Capacitor shim was actually written
+# against) only exists before the fetch. Capture it first, compare after — a
+# post-fetch comparison would always agree and prove nothing.
+RUN set -e; \
+    want="$(sed -n "s/.*__owObsidianVersion *= *'\([^']*\)'.*/\1/p" src/client-mobile/obsidian-version.js | head -1)"; \
+    if [ -n "$OBSIDIAN_MOBILE_VERSION" ]; then \
       node scripts/update-obsidian-mobile.js --version "$OBSIDIAN_MOBILE_VERSION"; \
     else \
       node scripts/update-obsidian-mobile.js; \
+    fi; \
+    got="$(sed -n "s/.*__owObsidianVersion *= *'\([^']*\)'.*/\1/p" src/client-mobile/obsidian-version.js | head -1)"; \
+    echo "renderer version: client written for '$want', fetched '$got'"; \
+    if [ -n "$want" ] && [ "$want" != "$got" ]; then \
+      echo "FATAL: Obsidian renderer/client mismatch (client written for $want, fetched $got)." >&2; \
+      echo "  The bundle would build and serve fine but die in the browser with the boot" >&2; \
+      echo "  watchdog's 'did not start' screen — the shim does not implement what $got" >&2; \
+      echo "  expects. Build with --build-arg OBSIDIAN_MOBILE_VERSION=$want, or do the" >&2; \
+      echo "  client-side support work and commit the new obsidian-version.js." >&2; \
+      exit 1; \
     fi
 
 # The static bundle. OW_PROFILE unset = the default (app) profile: no demo vault,
