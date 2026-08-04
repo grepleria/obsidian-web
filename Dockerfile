@@ -34,14 +34,19 @@ ENV SEED_LIVESYNC_VERSION=${SEED_LIVESYNC_VERSION}
 # vendor/obsidian-mobile/ — Obsidian's own Android renderer, extracted from the
 # official APK. Gitignored upstream (it is Dynalist's proprietary bundle, NOT
 # redistributable source), so it must be fetched at build time, never committed.
-# patch-obsidian-mobile.js applies zero patches today but aborts loudly if a
-# future Obsidian version breaks an expected match — leave it in the chain.
+#
+# NB this is the ONLY step needed: update-obsidian-mobile.js already imports and
+# calls applyPatches on the extracted app.js itself (see its line ~306), so the
+# README's `&& node scripts/patch-obsidian-mobile.js` companion is for the
+# manual/dev flow only. Chaining it here fails — invoked standalone the script
+# is a CLI that requires a <path-to-app.js> argument and exits 1 without one.
+# (The patch list is empty today but aborts loudly if a future Obsidian version
+# breaks an expected match; that guard runs inside the update script.)
 RUN if [ -n "$OBSIDIAN_MOBILE_VERSION" ]; then \
       node scripts/update-obsidian-mobile.js --version "$OBSIDIAN_MOBILE_VERSION"; \
     else \
       node scripts/update-obsidian-mobile.js; \
-    fi \
- && node scripts/patch-obsidian-mobile.js
+    fi
 
 # The static bundle. OW_PROFILE unset = the default (app) profile: no demo vault,
 # no seeded example content — the shape this platform wants (each visitor gets
