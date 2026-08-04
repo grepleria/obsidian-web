@@ -121,6 +121,20 @@
 
     await store.writeFile({ path: DATA, data: JSON.stringify(merged, null, 2), encoding: 'utf8' });
     await store.writeFile({ path: MARKER, data: rev, encoding: 'utf8' });
+
+    // Adopt the server's vault name locally. boot.js has to create the vault
+    // BEFORE this fetch resolves (it is what makes the fetch happen at all),
+    // so it necessarily uses the generic provision.vault.name placeholder;
+    // this is the first moment the real name is known. Registry-only cosmetic
+    // rename -- never fails the seed.
+    try {
+      if (payload.vault && typeof window !== 'undefined' && window.__owLocalVaults
+          && window.__owVaultId && window.__owLocalVaults.get(window.__owVaultId)
+          && window.__owLocalVaults.get(window.__owVaultId).name !== payload.vault) {
+        window.__owLocalVaults.rename(window.__owVaultId, payload.vault);
+      }
+    } catch (_) {}
+
     return true;
   }
 

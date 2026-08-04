@@ -46,8 +46,16 @@
     // provision: self-hosted LiveSync auto-config (seed-livesync-config.js).
     // null = OFF, and no upstream profile sets it: the app/demo deployments
     // keep the manual/setup-URI flow untouched. A self-hosted profile sets
-    // { configUrl: '/livesync-config.json' } and its origin serves that file
-    // behind whatever identity gate it already uses.
+    //   { configUrl: '/livesync-config.json',
+    //     vault: { autoOpen: true, id: '<fixed>', name: '<label>' } }
+    // and its origin serves that file behind whatever identity gate it
+    // already uses.
+    //
+    // BOTH keys are needed. configUrl alone is not enough: the seeder runs
+    // inside boot.js's vault-open branch, so with no vault auto-opened a cold
+    // visitor lands on Obsidian's native onboarding and the config is never
+    // fetched. vault.autoOpen is what creates and opens the OPFS vault that
+    // LiveSync then replicates INTO.
     provision: null,
     branding: { name: 'Obsidian Web', themeColor: '#1e1e1e' }
   };
