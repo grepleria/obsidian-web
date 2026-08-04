@@ -127,6 +127,14 @@
        docs/plans/opfs-seed-system-plugins.md §3. -->
   <script src="/client-mobile/seed-system-plugins.js?v=1"></script>
 
+  <!-- 3b-2. seed-on-boot of a PROVISIONED LiveSync config (self-hosted
+       deployments only). Must load before boot.js so
+       window.__owSeedLivesyncConfig exists when boot.js calls it, immediately
+       after the system-plugin seed above — the plugin FILES must be in place
+       before its data.json is written. Inert unless the active profile sets
+       provision.configUrl; no upstream profile does. -->
+  <script src="/client-mobile/seed-livesync-config.js?v=1"></script>
+
   <!-- 3c. seed-on-boot של תוכן-דוגמה (Welcome/Features) לתוך vault ריק — CF
        static בלבד (example-vault.json קיים רק ב-build של ה-CF deployment;
        מקומי מדלג, 404). לא נוגע ב-.obsidian/ — ראה docs/plans/cf-mobile-seed.md

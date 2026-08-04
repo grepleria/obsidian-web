@@ -43,6 +43,12 @@
     },
     layout: { default: 'auto', threshold: 900 },
     demoVault: { enabled: false, id: '0000demo0000demo' },
+    // provision: self-hosted LiveSync auto-config (seed-livesync-config.js).
+    // null = OFF, and no upstream profile sets it: the app/demo deployments
+    // keep the manual/setup-URI flow untouched. A self-hosted profile sets
+    // { configUrl: '/livesync-config.json' } and its origin serves that file
+    // behind whatever identity gate it already uses.
+    provision: null,
     branding: { name: 'Obsidian Web', themeColor: '#1e1e1e' }
   };
 

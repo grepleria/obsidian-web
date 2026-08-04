@@ -1,0 +1,13 @@
+{
+  "_comment": "Self-hosted profile (OW_PROFILE=selfhosted). Differs from the default app profile in exactly two ways: LiveSync is auto-ENABLED rather than installed-but-disabled, and `provision` points at a same-origin endpoint that supplies this deployment's LiveSync settings. Together these make a first visit land in a configured, already-syncing vault with zero clicks. The endpoint is expected to sit behind the deployment's own identity gate and to be served no-store; if it 404s, seed-livesync-config.js falls back to the manual flow and this profile behaves like the app profile with LiveSync pre-enabled.",
+  "defaultVaultLocation": "device",
+  "seedExampleContent": false,
+  "plugins": {
+    "obsidian-livesync": { "install": true, "enabled": true },
+    "obsidian-web-layout": { "install": true, "enabled": true }
+  },
+  "layout": { "default": "auto", "threshold": 900 },
+  "demoVault": { "enabled": false, "id": "0000demo0000demo" },
+  "branding": { "name": "Obsidian Web", "themeColor": "#1e1e1e" },
+  "provision": { "configUrl": "/livesync-config.json" }
+}

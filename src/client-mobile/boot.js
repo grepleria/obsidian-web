@@ -1379,6 +1379,26 @@ const MOBILE_SCRIPTS = [
         catch (e) { console.warn('[ow] seed system plugins failed', e); }
       }
 
+      // Provisioned LiveSync config (self-hosted deployments only): write this
+      // origin's settings into the plugin's data.json BEFORE Obsidian loads, so
+      // it boots already-configured and replicates the remote vault down — no
+      // setup URI to paste. Inert unless config.provision.configUrl is set (no
+      // upstream profile sets it) and a 404 from the endpoint falls back to the
+      // manual flow, so the app/demo profiles are unaffected.
+      //
+      // Deliberately NOT gated on isVaultEmptyForSeed, unlike the seeders
+      // around it: a rev bump (rotated credentials) must reach a vault that
+      // ALREADY has content. The module's own rev-gate is what stops it
+      // rewriting on every boot, and it merges over existing settings rather
+      // than replacing them.
+      if (seedStore && window.__owSeedLivesyncConfig
+          && (window.__owConfig && window.__owConfig.provision)) {
+        try {
+          await window.__owSeedLivesyncConfig.seedLivesyncConfig(
+            seedStore, window.__owConfig.provision);
+        } catch (e) { console.warn('[ow] seed livesync config failed', e); }
+      }
+
       // seed example content (Welcome.md, Features/*) לתוך vault ריק — CF static
       // בלבד (example-vault.json קיים רק ב-build של ה-CF deployment; מקומי
       // fetch מחזיר 404 ו-seedExampleVault מדלג). לא נוגע ב-.obsidian/ (finding
