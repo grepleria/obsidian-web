@@ -74,10 +74,26 @@ RUN set -e; \
       exit 1; \
     fi
 
-# The static bundle. OW_PROFILE unset = the default (app) profile: no demo vault,
-# no seeded example content — the shape this platform wants (each visitor gets
-# their own empty OPFS vault and points LiveSync at their own CouchDB database).
+# Build profile. Defaults to `selfhosted` because that is what this image IS:
+# src/config/deploy-config.selfhosted.json enables LiveSync (rather than
+# shipping it installed-but-disabled like the public app profile) and points
+# provision.configUrl at /livesync-config.json, which the deployment mounts in.
+# Together those make a first visit land in a configured, syncing vault.
+# Override with --build-arg OW_PROFILE= for the stock app profile (manual
+# LiveSync setup), or =demo for the seeded demo vault.
+ARG OW_PROFILE="selfhosted"
+ENV OW_PROFILE=${OW_PROFILE}
 RUN cd src/deployments/cloudflare && npm install --no-audit --no-fund && npm run build
+
+# Fail loudly if the profile did not actually take — a typo'd OW_PROFILE would
+# otherwise silently ship the stock app profile, i.e. LiveSync disabled and no
+# provisioning, which looks fine until a visitor lands on the setup screen.
+RUN set -e; \
+    idx=/build/.tmp/deployments/cloudflare/public/index.html; \
+    grep -q '"provision":{"configUrl"' "$idx" \
+      || (echo "FATAL: built bundle has no provision.configUrl — OW_PROFILE='$OW_PROFILE' did not inject the self-hosted profile. (Note the base profile carries provision:null, so grepping for the bare key would false-pass.)" >&2; exit 1); \
+    grep -q '"obsidian-livesync":{"install":true,"enabled":true}' "$idx" \
+      || (echo "FATAL: built bundle does not auto-enable obsidian-livesync — visitors would have to enable it by hand." >&2; exit 1)
 
 # HARD GATE — upstream's build WARNS AND CONTINUES when the LiveSync plugin
 # download fails (offline/GitHub outage), shipping a bundle with the layout
