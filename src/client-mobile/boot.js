@@ -135,11 +135,54 @@ const MOBILE_SCRIPTS = [
         // seeded (finding 1), so routing straight to the note is the only
         // remaining way to actually render it, zero clicks, as §1 promises.
         location.replace('/vault/' + encodeURIComponent(DEMO_ID) + '/Welcome');
+      } else if (owProvisionVaultId()) {
+        // Self-hosted provisioning (§ deploy-config.selfhosted.json): create
+        // and open this deployment's vault so a cold visit lands INSIDE a
+        // vault rather than on Obsidian's native "Where is your vault
+        // located?" onboarding.
+        //
+        // This is load-bearing for the whole provisioning feature, not a
+        // convenience: seedLivesyncConfig() runs inside the VAULT_ID branch
+        // far below, so with no vault open it never executes, /livesync-
+        // config.json is never fetched, and LiveSync never initialises. The
+        // served config was correct all along -- nothing was reading it.
+        //
+        // No /Welcome suffix (unlike the demo): the vault starts EMPTY by
+        // design and LiveSync replicates content in from CouchDB, so there is
+        // no seeded note to route to. Obsidian's "New tab" screen is the
+        // correct landing until the first pull completes.
+        location.replace('/vault/' + encodeURIComponent(owProvisionVaultId()));
       } else {
         location.replace('/starter');
       }
     }
     return;   // מנווטים החוצה — אין מה לעשות יותר בטיק הזה
+  }
+
+  // ── Provisioned vault — self-hosted cold-start (provision.vault) ──────────
+  // Returns the configured provision vault id, or '' when this build is not a
+  // provisioning deployment. ES5 guard style matching demoVault above:
+  // autoOpen must be EXPLICITLY true -- a deployment that sets provision
+  // without vault.autoOpen keeps the stock onboarding.
+  function owProvisionVaultId() {
+    var pv = window.__owConfig && window.__owConfig.provision
+               && window.__owConfig.provision.vault;
+    if (!pv || pv.autoOpen !== true || !pv.id) return '';
+    return pv.id;
+  }
+
+  // Idempotent registry create, exactly like ensureDemo(): the FIXED id is
+  // what makes repeat visits a no-op and keeps /vault/<id> bookmarkable.
+  // Named generically here; seed-livesync-config.js renames it to the vault
+  // name the server actually served once that fetch lands.
+  function ensureProvisionVault() {
+    var id = owProvisionVaultId();
+    if (!id) return '';
+    if (window.__owLocalVaults && !window.__owLocalVaults.get(id)) {
+      var pv = window.__owConfig.provision.vault;
+      window.__owLocalVaults.create(pv.name || 'Vault', { id: id });
+    }
+    return id;
   }
 
   // ── Demo vault — lazy create-if-missing (seed-demo §3ג) ────────────────────
@@ -172,6 +215,11 @@ const MOBILE_SCRIPTS = [
   // Once created, VAULT_TYPE below resolves to 'local' (registry lookup
   // succeeds) instead of falling back to 'server' for an unknown id.
   if (VAULT_ID === DEMO_ID) ensureDemo();
+  // Same create-if-missing for the provisioned vault, so a direct or
+  // bookmarked /vault/<provisionId> works before the entry redirect has
+  // ever run (and so VAULT_TYPE resolves 'local', not the 'server'
+  // fallback for an unknown id).
+  if (VAULT_ID && VAULT_ID === owProvisionVaultId()) ensureProvisionVault();
 
   // Vault type: 'local' (OPFS, no server round-trip), 'folder' (real
   // directory picked via showDirectoryPicker, also OPFS-store-backed — see
@@ -1377,6 +1425,26 @@ const MOBILE_SCRIPTS = [
       if (isVaultEmptyForSeed && seedStore && window.__owSeedSystemPlugins) {
         try { await window.__owSeedSystemPlugins.seedSystemPlugins(seedStore); }
         catch (e) { console.warn('[ow] seed system plugins failed', e); }
+      }
+
+      // Provisioned LiveSync config (self-hosted deployments only): write this
+      // origin's settings into the plugin's data.json BEFORE Obsidian loads, so
+      // it boots already-configured and replicates the remote vault down — no
+      // setup URI to paste. Inert unless config.provision.configUrl is set (no
+      // upstream profile sets it) and a 404 from the endpoint falls back to the
+      // manual flow, so the app/demo profiles are unaffected.
+      //
+      // Deliberately NOT gated on isVaultEmptyForSeed, unlike the seeders
+      // around it: a rev bump (rotated credentials) must reach a vault that
+      // ALREADY has content. The module's own rev-gate is what stops it
+      // rewriting on every boot, and it merges over existing settings rather
+      // than replacing them.
+      if (seedStore && window.__owSeedLivesyncConfig
+          && (window.__owConfig && window.__owConfig.provision)) {
+        try {
+          await window.__owSeedLivesyncConfig.seedLivesyncConfig(
+            seedStore, window.__owConfig.provision);
+        } catch (e) { console.warn('[ow] seed livesync config failed', e); }
       }
 
       // seed example content (Welcome.md, Features/*) לתוך vault ריק — CF static
