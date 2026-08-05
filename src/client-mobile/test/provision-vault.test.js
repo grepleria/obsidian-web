@@ -33,12 +33,14 @@ test('selfhosted profile ships provision.vault.autoOpen — without it the seede
   assert.ok(cfg.provision.vault.id, 'a fixed vault id is required');
 });
 
-test('provision vault id is fixed, not random — repeat visits must reuse it', () => {
+test('provision vault id is fixed and URL-clean — repeat visits must reuse it', () => {
   const a = JSON.parse(fs.readFileSync(SELFHOSTED, 'utf8')).provision.vault.id;
-  const b = JSON.parse(fs.readFileSync(SELFHOSTED, 'utf8')).provision.vault.id;
-  assert.strictEqual(a, b);
+  assert.strictEqual(a, 'web', 'the id IS the public URL segment (/vault/web) — keep it human');
   // Distinct from the demo vault, or a deployment with both would collide.
   assert.notStrictEqual(a, '0000demo0000demo');
+  // Single path segment, no escaping needed: boot.js splits /vault/<id>/<note>
+  // on slashes and the id must survive encodeURIComponent unchanged.
+  assert.match(a, /^[a-z0-9-]+$/);
 });
 
 test('registry create with a fixed id is idempotent (ensureProvisionVault contract)', () => {
@@ -54,7 +56,7 @@ test('registry create with a fixed id is idempotent (ensureProvisionVault contra
   delete require.cache[require.resolve('../local-vault-registry')];
   const registry = require('../local-vault-registry');
 
-  const ID = '0000prov0000prov';
+  const ID = 'web';
   assert.ok(!registry.get(ID), 'starts absent');
 
   // First visit creates it...

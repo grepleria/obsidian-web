@@ -28,7 +28,7 @@
     "configUrl": "/livesync-config.json",
     "vault": {
       "autoOpen": true,
-      "id": "0000prov0000prov",
+      "id": "web",
       "name": "Vault"
     }
   }
