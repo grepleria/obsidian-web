@@ -109,6 +109,15 @@ RUN test -f /build/.tmp/deployments/cloudflare/public/system-plugins/obsidian-li
 FROM nginx:1.27-alpine
 
 COPY --from=builder /build/.tmp/deployments/cloudflare/public /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Installed as a TEMPLATE (not conf.d): the official image entrypoint
+# envsubst-renders /etc/nginx/templates/*.template into conf.d at start,
+# substituting ${OW_SYNC_UPSTREAM} (the same-origin /sync/ proxy target --
+# the deployment's CouchDB hub LAN address). The default below is a
+# deliberately dead loopback so an unconfigured deployment gets a valid
+# config with a 502ing /sync/ (and a working static site) instead of an
+# nginx that refuses to boot on an empty proxy_pass.
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+ENV OW_SYNC_UPSTREAM=http://127.0.0.1:5984
 
 EXPOSE 80
