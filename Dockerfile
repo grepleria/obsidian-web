@@ -119,5 +119,8 @@ COPY --from=builder /build/.tmp/deployments/cloudflare/public /usr/share/nginx/h
 # nginx that refuses to boot on an empty proxy_pass.
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 ENV OW_SYNC_UPSTREAM=http://127.0.0.1:5984
+# Page title for this deployment (sub_filter in nginx.conf); default is the
+# stock name, i.e. a no-op rewrite.
+ENV OW_TITLE="Obsidian Web"
 
 EXPOSE 80
