@@ -245,3 +245,55 @@ test('seedSystemPlugins does not use static fallback when /api/system-plugins su
 
   assert.ok(!fake.calls.some((u) => u.startsWith('/system-plugins/')), 'static fallback not consulted when /api succeeds');
 });
+
+// ── seedCorePlugins (feat/core-plugins) ──────────────────────────────────────
+
+const fs2 = require('fs');
+const path2 = require('path');
+const SELFHOSTED2 = path2.join(__dirname, '..', '..', 'config', 'deploy-config.selfhosted.json');
+
+const { seedCorePlugins } = require('../seed-system-plugins');
+
+function makeCoreStore(initial) {
+  const files = new Map(Object.entries(initial || {}));
+  return {
+    files,
+    async readFile({ path }) {
+      if (!files.has(path)) { const e = new Error('ENOENT ' + path); e.code = 'ENOENT'; throw e; }
+      return { data: files.get(path) };
+    },
+    async writeFile({ path, data }) { files.set(path, data); return { uri: '' }; },
+  };
+}
+
+test('seedCorePlugins writes the allowlist + migration marker into a fresh vault', async () => {
+  const store = makeCoreStore();
+  const wrote = await seedCorePlugins(store, ['file-explorer', 'graph']);
+  assert.strictEqual(wrote, true);
+  assert.deepStrictEqual(JSON.parse(store.files.get('.obsidian/core-plugins.json')),
+    ['file-explorer', 'graph']);
+  assert.deepStrictEqual(JSON.parse(store.files.get('.obsidian/core-plugins-migration.json')),
+    { 'file-explorer': true });
+});
+
+test('seedCorePlugins is write-once — an existing file (user toggles) is never clobbered', async () => {
+  const store = makeCoreStore({ '.obsidian/core-plugins.json': '["sync"]' });
+  const wrote = await seedCorePlugins(store, ['file-explorer']);
+  assert.strictEqual(wrote, false);
+  assert.strictEqual(store.files.get('.obsidian/core-plugins.json'), '["sync"]');
+});
+
+test('seedCorePlugins no-ops on null/empty config (upstream profiles)', async () => {
+  const store = makeCoreStore();
+  assert.strictEqual(await seedCorePlugins(store, null), false);
+  assert.strictEqual(await seedCorePlugins(store, []), false);
+  assert.ok(!store.files.has('.obsidian/core-plugins.json'));
+});
+
+test('selfhosted profile omits the commercial sync/publish core plugins', () => {
+  const cfg = JSON.parse(fs2.readFileSync(SELFHOSTED2, 'utf8'));
+  assert.ok(Array.isArray(cfg.corePlugins) && cfg.corePlugins.length > 0);
+  assert.ok(!cfg.corePlugins.includes('sync'), 'core Sync must not be seeded — LiveSync is the sync');
+  assert.ok(!cfg.corePlugins.includes('publish'));
+  assert.ok(cfg.corePlugins.includes('file-explorer'), 'allowlist semantics: essentials must be PRESENT');
+});

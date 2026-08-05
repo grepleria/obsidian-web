@@ -1425,6 +1425,16 @@ const MOBILE_SCRIPTS = [
       if (isVaultEmptyForSeed && seedStore && window.__owSeedSystemPlugins) {
         try { await window.__owSeedSystemPlugins.seedSystemPlugins(seedStore); }
         catch (e) { console.warn('[ow] seed system plugins failed', e); }
+        // Core-plugins allowlist (selfhosted: no commercial Sync/Publish
+        // panes — LiveSync is the sync here). Same fresh-vault gate; the
+        // seeder itself is additionally write-once, so this never fights
+        // toggles the user makes later.
+        try {
+          var __owCP = window.__owConfig && window.__owConfig.corePlugins;
+          if (__owCP && window.__owSeedSystemPlugins.seedCorePlugins) {
+            await window.__owSeedSystemPlugins.seedCorePlugins(seedStore, __owCP);
+          }
+        } catch (e) { console.warn('[ow] seed core plugins failed', e); }
       }
 
       // Provisioned LiveSync config (self-hosted deployments only): write this

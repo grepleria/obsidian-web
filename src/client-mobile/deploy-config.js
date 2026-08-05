@@ -57,6 +57,16 @@
     // fetched. vault.autoOpen is what creates and opens the OPFS vault that
     // LiveSync then replicates INTO.
     provision: null,
+    // corePlugins: enabled-core-plugins ALLOWLIST seeded into FRESH vaults as
+    // .obsidian/core-plugins.json. This renderer generation's file format is
+    // an array of enabled ids (upstream's own demo template writes exactly
+    // that — src/deployments/cloudflare/template.js), so an id simply absent
+    // from the list is disabled. null = do not seed; the renderer's built-in
+    // defaults apply (which include the commercial Sync/Publish plugins —
+    // the selfhosted profile omits them because LiveSync is the sync here
+    // and a second "Sync" pane is a footgun). Seeded ONCE into empty vaults
+    // only; Obsidian owns the file afterwards, so user toggles stick.
+    corePlugins: null,
     branding: { name: 'Obsidian Web', themeColor: '#1e1e1e' }
   };
 

@@ -72,9 +72,40 @@
     await store.writeFile({ path: '.obsidian/community-plugins.json', data: JSON.stringify(merged, null, 2), encoding: 'utf8' });
   }
 
+  /**
+   * seedCorePlugins — write the deployment's enabled-core-plugins allowlist
+   * into a FRESH vault (callers gate on isVaultEmptyForSeed, same as
+   * seedSystemPlugins above). Write-once by design: if core-plugins.json
+   * already exists — app-written or from a previous seed — leave it alone,
+   * so toggles the user makes in Settings stick.
+   *
+   * Format note: this renderer generation reads core-plugins.json as an
+   * ARRAY of enabled ids (see upstream's demo template) — absent = disabled.
+   * The companion core-plugins-migration.json marker mirrors what the demo
+   * template writes, keeping the renderer's migration path quiet.
+   */
+  async function seedCorePlugins(store, list) {
+    if (!Array.isArray(list) || list.length === 0) return false;
+    try {
+      await store.readFile({ path: '.obsidian/core-plugins.json', encoding: 'utf8' });
+      return false;                                  // exists → app owns it now
+    } catch (_) {}
+    await store.writeFile({
+      path: '.obsidian/core-plugins.json',
+      data: JSON.stringify(list, null, 2),
+      encoding: 'utf8',
+    });
+    await store.writeFile({
+      path: '.obsidian/core-plugins-migration.json',
+      data: JSON.stringify({ 'file-explorer': true }),
+      encoding: 'utf8',
+    });
+    return true;
+  }
+
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { seedSystemPlugins };
+    module.exports = { seedSystemPlugins, seedCorePlugins };
   } else if (typeof window !== 'undefined') {
-    window.__owSeedSystemPlugins = { seedSystemPlugins };
+    window.__owSeedSystemPlugins = { seedSystemPlugins, seedCorePlugins };
   }
 })();
