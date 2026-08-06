@@ -59,7 +59,48 @@
 const fsp = require('fs/promises');
 const path = require('path');
 
-const PATCHES = [];
+const PATCHES = [
+  {
+    name: 'pdf-context-menu-browser-path',
+    // WHAT: makes right-click inside the PDF viewer open OBSIDIAN's context
+    // menu (with plugin items, e.g. PDF++) instead of the browser's native
+    // menu. The PDF view's onContextMenu, unlike the editor/file-tree ones,
+    // takes an ELECTRON detour when `win.electron` exists (which our desktop
+    // layout's electron shim deliberately provides): it awaits an
+    // ipcRenderer "context-menu" round-trip that no browser answers (1s
+    // timeout -> bail), and — decisively — it never calls preventDefault()
+    // synchronously, because real Electron has no native context menu to
+    // suppress. In a browser the native menu therefore always wins.
+    //
+    // WHY A PATCH (zero-patches.md exception, argued): a runtime shim is
+    // structurally impossible here. Suppressing the native menu requires a
+    // SYNCHRONOUS preventDefault() during dispatch, but the electron branch
+    // explicitly bails on `e.defaultPrevented` after its await — so any
+    // capture-phase preventDefault kills Obsidian's own menu, and without
+    // one the browser menu always shows. The only fix is steering the
+    // handler onto its NON-electron branch (which builds the full menu
+    // synchronously, with navigator.clipboard fallbacks already in place)
+    // and preventing the default there. Both edits are inside the minified
+    // function body — runtime interception has no seam.
+    //
+    // Both changes are gated on `win.__owPlatform` (set only by obsidian-web
+    // boot), so the patched bundle behaves byte-for-byte stock anywhere our
+    // platform marker is absent.
+    //
+    // ANCHOR: `.win.electron)&&` — the PDF onContextMenu is the only site
+    //         that computes `isDesktopApp && win.electron` into a flag and
+    //         immediately gates an isTrusted electron IPC await on it.
+    // REBUILD: find the PDF viewer's onContextMenu (search
+    //         `onThumbnailContextMenu` and walk back ~7k chars). The shape:
+    //         `(s=bn.isDesktopApp&&e.win.electron)&&e.isTrusted?[4,Rn(e)]:[3,2]`
+    //         Only identifiers vary across builds; the state labels [4,..]
+    //         and [3,2] are the async-generator jump table and may renumber —
+    //         update the literals if so, keeping else-branch semantics.
+    find: /\((\w{1,3})=(\w{1,3})\.isDesktopApp&&(\w{1,3})\.win\.electron\)&&\3\.isTrusted\?\[4,(\w{1,3})\(\3\)\]:\[3,2\]/g,
+    replace: '($1=$2.isDesktopApp&&$3.win.electron&&!$3.win.__owPlatform)&&$3.isTrusted?[4,$4($3)]:($3.win.__owPlatform&&$3.preventDefault(),[3,2])',
+    expectedMatches: 1,
+  },
+];
 
 async function applyPatches(appJsPath) {
   let content = await fsp.readFile(appJsPath, 'utf8');
