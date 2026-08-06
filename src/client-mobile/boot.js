@@ -1422,13 +1422,20 @@ const MOBILE_SCRIPTS = [
       // (OPFS) ו-folder vaults (לא server, שמקבל אותם דרך overlay צד-שרת
       // קיים). לא חוסם את הפתיחה אם נכשל (retry ב-boot הבא דרך ה-version-gate).
       // isVaultEmptyForSeed (למעלה): לעולם לא בכספת עם תוכן-משתמש קיים.
-      if (isVaultEmptyForSeed && seedStore && window.__owSeedSystemPlugins) {
+      // System plugins seed on EVERY boot (feat/template-plugins), not only
+      // into fresh vaults: existing replicas must receive plugins added to
+      // the image bundle on their next load. Safe on populated vaults
+      // because the seeder is marker-gated per plugin, refreshes files
+      // without touching enablement on upgrades, and never re-enables a
+      // plugin the user turned off (see its enablement-semantics comment).
+      if (seedStore && window.__owSeedSystemPlugins) {
         try { await window.__owSeedSystemPlugins.seedSystemPlugins(seedStore); }
         catch (e) { console.warn('[ow] seed system plugins failed', e); }
+      }
+      if (isVaultEmptyForSeed && seedStore && window.__owSeedSystemPlugins) {
         // Core-plugins allowlist (selfhosted: no commercial Sync/Publish
-        // panes — LiveSync is the sync here). Same fresh-vault gate; the
-        // seeder itself is additionally write-once, so this never fights
-        // toggles the user makes later.
+        // panes — LiveSync is the sync here). Stays fresh-vault-gated AND
+        // write-once: core-plugins.json is app-owned after first boot.
         try {
           var __owCP = window.__owConfig && window.__owConfig.corePlugins;
           if (__owCP && window.__owSeedSystemPlugins.seedCorePlugins) {

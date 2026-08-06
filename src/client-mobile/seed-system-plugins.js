@@ -36,14 +36,26 @@
 
       let seededVer = null;
       try { seededVer = (await store.readFile({ path: marker, encoding: 'utf8' })).data; } catch (_) {}
-      // p.enabled===false → seed the files but DON'T add to community-plugins.json
-      // (installed-but-disabled; user enables it manually). Default/undefined = enabled.
-      if (seededVer === p.version) { if (p.enabled !== false) enabled.push(p.id); continue; }   // כבר seeded → (הפעל?), דלג
 
-      // אם קובץ כלשהו נכשל — אל תסמן marker ואל תפעיל (אחרת plugin שבור תקוע
+      // Enablement semantics (feat/template-plugins — this seeder now runs on
+      // EVERY boot, not only into fresh vaults, so existing replicas receive
+      // new/updated plugins on their next load):
+      //   marker == version  → nothing at all. Critically: do NOT re-add to
+      //     the enabled list — the union-merge below would re-enable a plugin
+      //     the user deliberately turned off, every single boot.
+      //   marker absent (NEW install) → seed all files; enable per p.enabled
+      //     (false = installed-but-disabled).
+      //   marker != version (UPGRADE) → refresh the files but skip data.json
+      //     (the user's plugin settings — template defaults are for first
+      //     install only) and do NOT touch enablement.
+      if (seededVer === p.version) continue;
+      const isUpgrade = seededVer !== null;
+
+      // אם קובץ כלשהו נכשל — אל תסמן marker (אחרת plugin שבור תקוע
       // ולא מתעדכן; ה-boot הבא ינסה שוב כי המ-marker לא ישקף את הגרסה הנוכחית).
       let allOk = true;
       for (const f of p.files) {
+        if (isUpgrade && f === 'data.json') continue;   // never clobber user settings
         const url = base === 'static'
           ? '/system-plugins/' + p.id + '/' + encodeURIComponent(f)
           : '/api/system-plugin-file?id=' + encodeURIComponent(p.id) + '&file=' + encodeURIComponent(f);
@@ -55,7 +67,7 @@
       }
       if (allOk) {
         await store.writeFile({ path: marker, data: p.version, encoding: 'utf8' });
-        if (p.enabled !== false) enabled.push(p.id);   // ‏disabled → ‏seeded ‏אבל ‏לא ‏מופעל
+        if (!isUpgrade && p.enabled !== false) enabled.push(p.id);   // enable on FIRST install only
       } else {
         console.warn('[ow] system plugin ' + p.id + ' seed incomplete — retry בboot הבא');
       }

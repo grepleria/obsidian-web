@@ -256,12 +256,25 @@ else
   echo "  config: plugins.obsidian-livesync.install=false — skipping LiveSync"
 fi
 
+# ── template-derived plugins (feat/template-plugins) ─────────────────────────
+# OW_TEMPLATE_VAULT_DIR = a checkout of the deployment's template vault
+# (grepleria/obsidian-vault-template). When set, its .obsidian/plugins/* are
+# bundled into system-plugins/ with `enabled` read from the template's own
+# community-plugins.json — the template is the single source of truth for
+# the plugin set on both tiers. Unset (upstream/plain builds) = no-op.
+TEMPLATE_ENTRIES="[]"
+if [[ -n "${OW_TEMPLATE_VAULT_DIR:-}" ]]; then
+  echo "  bundling template plugins from $OW_TEMPLATE_VAULT_DIR ..."
+  TEMPLATE_ENTRIES=$(node "$MAIN_DIR/scripts/collect-template-plugins.js" "$OW_TEMPLATE_VAULT_DIR" "$PUBLIC_DIR/system-plugins")
+fi
+
 # manifest.json — finding 2: env מיוצא inline לפני node -e (אחרת process.env undefined → abort)
-LAYOUT_VER="$LAYOUT_VER" LAYOUT_ENABLED="$LAYOUT_ENABLED" LS_VERSION="$LS_VERSION" LS_FILES="$LS_FILES" LS_ENABLED="$LS_ENABLED" OUT="$PUBLIC_DIR/system-plugins/manifest.json" node -e '
+LAYOUT_VER="$LAYOUT_VER" LAYOUT_ENABLED="$LAYOUT_ENABLED" LS_VERSION="$LS_VERSION" LS_FILES="$LS_FILES" LS_ENABLED="$LS_ENABLED" TEMPLATE_ENTRIES="$TEMPLATE_ENTRIES" OUT="$PUBLIC_DIR/system-plugins/manifest.json" node -e '
   const fs=require("fs");
   const plugins=[];
   if (process.env.LAYOUT_VER) plugins.push({id:"obsidian-web-layout",version:process.env.LAYOUT_VER,files:["main.js","manifest.json"],enabled:process.env.LAYOUT_ENABLED === "true"});
   if (process.env.LS_VERSION) plugins.push({id:"obsidian-livesync",version:process.env.LS_VERSION,files:JSON.parse(process.env.LS_FILES),enabled:process.env.LS_ENABLED === "true"});
+  for (const e of JSON.parse(process.env.TEMPLATE_ENTRIES || "[]")) plugins.push(e);
   fs.writeFileSync(process.env.OUT, JSON.stringify({plugins}));
 '
 
