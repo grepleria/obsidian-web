@@ -52,5 +52,16 @@
     "outline",
     "word-count",
     "file-recovery"
+  ],
+  "webPlugins": [
+    "dataview",
+    "pdf-plus",
+    "tasknotes",
+    "obsidian-meta-bind-plugin",
+    "floating-toc",
+    "emoji-shortcodes",
+    "folder-notes",
+    "file-order",
+    "obsidian-custom-attachment-location"
   ]
 }

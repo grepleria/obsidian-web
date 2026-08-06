@@ -51,11 +51,27 @@ try {
   fail('cannot read community-plugins.json from the template: ' + e.message);
 }
 
+// DEPLOYMENT allowlist (layering-design.md §7b): OW_WEB_PLUGINS is a JSON
+// array of template-plugin ids that may ship to the browser. Unset/empty =
+// no filter (base/upstream behaviour). Allowlisted-but-missing fails the
+// build below — a policy that silently thins is worse than none.
+let allowlist = null;
+if (process.env.OW_WEB_PLUGINS) {
+  try {
+    allowlist = JSON.parse(process.env.OW_WEB_PLUGINS);
+    if (!Array.isArray(allowlist)) throw new Error('not an array');
+  } catch (e) { fail('OW_WEB_PLUGINS is not a JSON array: ' + e.message); }
+}
+
 const entries = [];
 for (const id of fs.readdirSync(pluginsDir).sort()) {
   const src = path.join(pluginsDir, id);
   if (!fs.statSync(src).isDirectory()) continue;
   if (RESERVED.has(id)) { console.error('  skipping reserved id: ' + id); continue; }
+  if (allowlist && !allowlist.includes(id)) {
+    console.error('  not on the web allowlist, desktop-only: ' + id);
+    continue;
+  }
 
   let manifest;
   try { manifest = JSON.parse(fs.readFileSync(path.join(src, 'manifest.json'), 'utf8')); }
@@ -76,12 +92,17 @@ for (const id of fs.readdirSync(pluginsDir).sort()) {
   });
 }
 
-// Every enabled id in the template must have shipped — a listed-but-missing
-// plugin means the template repo is inconsistent; refuse to build a bundle
-// that silently drops it.
-for (const id of enabledList) {
+// Completeness gate. With an allowlist: every ALLOWLISTED id must have
+// shipped (a stale allowlist entry naming a plugin the template dropped is a
+// build error, not a silent thinning). Without one: every enabled id must
+// have shipped (the template repo itself is inconsistent otherwise).
+const mustShip = allowlist ? allowlist : enabledList;
+for (const id of mustShip) {
   if (RESERVED.has(id)) continue;
-  if (!entries.some((e) => e.id === id)) fail('community-plugins.json lists "' + id + '" but no such plugin dir exists in the template');
+  if (!entries.some((e) => e.id === id)) {
+    fail((allowlist ? 'webPlugins allowlist' : 'community-plugins.json') +
+      ' lists "' + id + '" but no such plugin exists in the template');
+  }
 }
 
 console.error('  template plugins bundled: ' + entries.length);

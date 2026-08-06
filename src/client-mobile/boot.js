@@ -1464,6 +1464,15 @@ const MOBILE_SCRIPTS = [
         } catch (e) { console.warn('[ow] seed livesync config failed', e); }
       }
 
+      // Org-managed plugin settings (layering-design.md §7b) — runs LAST so
+      // policy keys overlay both first-install template defaults and any
+      // same-boot livesync seed. Every boot; internally rev-gated on the
+      // served policy's content hash; 404 = not a policy origin = inert.
+      if (seedStore && window.__owSeedPluginPolicy) {
+        try { await window.__owSeedPluginPolicy.seedPluginPolicy(seedStore); }
+        catch (e) { console.warn('[ow] seed plugin policy failed', e); }
+      }
+
       // seed example content (Welcome.md, Features/*) לתוך vault ריק — CF static
       // בלבד (example-vault.json קיים רק ב-build של ה-CF deployment; מקומי
       // fetch מחזיר 404 ו-seedExampleVault מדלג). לא נוגע ב-.obsidian/ (finding

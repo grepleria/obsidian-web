@@ -127,10 +127,13 @@ RUN test -f /build/.tmp/deployments/cloudflare/public/system-plugins/obsidian-li
  && if [ -n "$OW_TEMPLATE_REPO" ]; then \
       node -e "const m=require('/build/.tmp/deployments/cloudflare/public/system-plugins/manifest.json'); \
         const ids=m.plugins.map(p=>p.id); \
-        const want=require('/build/.tmp/template/.obsidian/community-plugins.json'); \
+        const cfg=require('/build/src/config/deploy-config.'+(process.env.OW_PROFILE||'selfhosted')+'.json'); \
+        const want=cfg.webPlugins || require('/build/.tmp/template/.obsidian/community-plugins.json'); \
         const missing=want.filter(id=>!ids.includes(id)); \
-        if(missing.length){console.error('FATAL: template-enabled plugins missing from bundle: '+missing.join(', '));process.exit(1);} \
-        console.log('template plugin gate: '+want.length+' enabled ids all bundled');"; \
+        if(missing.length){console.error('FATAL: expected plugins missing from bundle: '+missing.join(', '));process.exit(1);} \
+        const extra=m.plugins.filter(p=>!['obsidian-livesync','obsidian-web-layout'].includes(p.id)&&cfg.webPlugins&&!cfg.webPlugins.includes(p.id)); \
+        if(extra.length){console.error('FATAL: non-allowlisted plugins leaked into the bundle: '+extra.map(p=>p.id).join(', '));process.exit(1);} \
+        console.log('template plugin gate: '+want.length+' expected ids bundled, no leaks');"; \
     fi
 
 # ── runtime ────────────────────────────────────────────────────────────────

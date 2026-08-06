@@ -67,6 +67,15 @@
     // and a second "Sync" pane is a footgun). Seeded ONCE into empty vaults
     // only; Obsidian owns the file afterwards, so user toggles stick.
     corePlugins: null,
+    // webPlugins: DEPLOYMENT-owned allowlist of template plugins that ship
+    // to the BROWSER bundle (layering-design.md §7b). null = no filter
+    // (every template plugin ships — upstream/base behaviour). The
+    // selfhosted profile sets an explicit list: web inclusion is a platform
+    // decision, not a vault-content one — without this, any
+    // desktop-motivated template merge silently ships arbitrary JS to the
+    // public-edge-facing origin. Enforced at IMAGE BUILD by
+    // collect-template-plugins.js (allowlisted-but-missing fails the build).
+    webPlugins: null,
     branding: { name: 'Obsidian Web', themeColor: '#1e1e1e' }
   };
 
