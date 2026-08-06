@@ -20,7 +20,7 @@ FROM node:22-alpine AS builder
 # bash: build-assets.sh is bash, not sh. unzip: scripts/update-obsidian-mobile.js
 # shells out to it to extract the APK's assets/public tree (the only external
 # tool either vendor-fetch script needs — everything else is node stdlib).
-RUN apk add --no-cache bash unzip
+RUN apk add --no-cache bash unzip git
 
 WORKDIR /build
 COPY . .
@@ -83,7 +83,27 @@ RUN set -e; \
 # LiveSync setup), or =demo for the seeded demo vault.
 ARG OW_PROFILE="selfhosted"
 ENV OW_PROFILE=${OW_PROFILE}
-RUN cd src/deployments/cloudflare && npm install --no-audit --no-fund && npm run build
+
+# Template vault — the single source of truth for the community-plugin set on
+# both tiers (grepleria-configs plans/obsidian-vault-platform/
+# layering-design.md). Its .obsidian/plugins/* are bundled into the
+# system-plugins overlay with `enabled` from its community-plugins.json;
+# reserved platform plugins (livesync, vault-operator) are skipped by the
+# collector. REF is a pinned commit for reproducible builds — bump it
+# together with template merges you want browsers to receive. Empty
+# OW_TEMPLATE_REPO skips the whole step (plain upstream build).
+ARG OW_TEMPLATE_REPO="https://github.com/grepleria/obsidian-vault-template.git"
+ARG OW_TEMPLATE_REF="1324cd75a5d39690337514d99f0fcf1ca3839539"
+RUN set -e; \
+    if [ -n "$OW_TEMPLATE_REPO" ]; then \
+      git init -q /build/.tmp/template; \
+      git -C /build/.tmp/template fetch -q --depth 1 "$OW_TEMPLATE_REPO" "$OW_TEMPLATE_REF"; \
+      git -C /build/.tmp/template checkout -q FETCH_HEAD; \
+      echo "template vault at $OW_TEMPLATE_REF"; \
+    fi
+
+RUN cd src/deployments/cloudflare && npm install --no-audit --no-fund \
+ && OW_TEMPLATE_VAULT_DIR="$([ -n "$OW_TEMPLATE_REPO" ] && echo /build/.tmp/template)" npm run build
 
 # Fail loudly if the profile did not actually take — a typo'd OW_PROFILE would
 # otherwise silently ship the stock app profile, i.e. LiveSync disabled and no
@@ -103,7 +123,15 @@ RUN set -e; \
 RUN test -f /build/.tmp/deployments/cloudflare/public/system-plugins/obsidian-livesync/main.js \
       || (echo "FATAL: obsidian-livesync missing from the built bundle — upstream's build warns-and-continues on a failed plugin download; refusing to ship a no-sync image." >&2; exit 1) \
  && test -f /build/.tmp/deployments/cloudflare/public/obsidian-mobile/app.js \
-      || (echo "FATAL: vendor renderer missing from the built bundle." >&2; exit 1)
+      || (echo "FATAL: vendor renderer missing from the built bundle." >&2; exit 1) \
+ && if [ -n "$OW_TEMPLATE_REPO" ]; then \
+      node -e "const m=require('/build/.tmp/deployments/cloudflare/public/system-plugins/manifest.json'); \
+        const ids=m.plugins.map(p=>p.id); \
+        const want=require('/build/.tmp/template/.obsidian/community-plugins.json'); \
+        const missing=want.filter(id=>!ids.includes(id)); \
+        if(missing.length){console.error('FATAL: template-enabled plugins missing from bundle: '+missing.join(', '));process.exit(1);} \
+        console.log('template plugin gate: '+want.length+' enabled ids all bundled');"; \
+    fi
 
 # ── runtime ────────────────────────────────────────────────────────────────
 FROM nginx:1.27-alpine

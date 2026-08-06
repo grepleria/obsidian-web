@@ -297,3 +297,67 @@ test('selfhosted profile omits the commercial sync/publish core plugins', () => 
   assert.ok(!cfg.corePlugins.includes('publish'));
   assert.ok(cfg.corePlugins.includes('file-explorer'), 'allowlist semantics: essentials must be PRESENT');
 });
+
+// ── every-boot semantics (feat/template-plugins) ─────────────────────────────
+// The seeder now runs on every boot into populated vaults, so these three
+// properties are load-bearing: user disables stay disabled, upgrades never
+// clobber settings, and first installs seed template defaults.
+
+function fetchStub(manifest, files) {
+  return async (url) => {
+    if (url === '/api/system-plugins') return { ok: true, json: async () => manifest };
+    const m = url.match(/^\/api\/system-plugin-file\?id=([^&]+)&file=(.+)$/);
+    if (m) {
+      const key = decodeURIComponent(m[1]) + '/' + decodeURIComponent(m[2]);
+      if (files[key] !== undefined) {
+        return { ok: true, arrayBuffer: async () => new TextEncoder().encode(files[key]).buffer };
+      }
+    }
+    return { ok: false };
+  };
+}
+
+test('same-version rerun does NOT re-enable a plugin the user disabled', async (t) => {
+  const man = { plugins: [{ id: 'p1', version: '1.0', files: ['main.js', 'manifest.json'] }] };
+  const store = makeFakeStore({
+    '.obsidian/plugins/p1/.ow-seeded-version': '1.0',
+    // user removed p1 from their community list after disabling it
+    '.obsidian/community-plugins.json': '["other-plugin"]',
+  });
+  t.mock.method(globalThis, 'fetch', fetchStub(man, {}));
+  await seedSystemPlugins(store);
+  assert.deepStrictEqual(JSON.parse(store.files.get('.obsidian/community-plugins.json')),
+    ['other-plugin'], 'p1 must stay disabled');
+});
+
+test('upgrade refreshes files but skips data.json and leaves enablement alone', async (t) => {
+  const man = { plugins: [{ id: 'p1', version: '2.0', files: ['main.js', 'manifest.json', 'data.json'] }] };
+  const store = makeFakeStore({
+    '.obsidian/plugins/p1/.ow-seeded-version': '1.0',
+    '.obsidian/plugins/p1/main.js': 'OLD',
+    '.obsidian/plugins/p1/data.json': '{"user":"settings"}',
+    '.obsidian/community-plugins.json': '[]',   // user has it disabled
+  });
+  t.mock.method(globalThis, 'fetch', fetchStub(man, {
+    'p1/main.js': 'NEW', 'p1/manifest.json': '{"id":"p1","version":"2.0"}',
+    'p1/data.json': '{"template":"defaults"}',
+  }));
+  await seedSystemPlugins(store);
+  assert.strictEqual(store.files.get('.obsidian/plugins/p1/main.js'), 'NEW', 'code updated');
+  assert.strictEqual(store.files.get('.obsidian/plugins/p1/data.json'), '{"user":"settings"}',
+    'user settings survive the upgrade');
+  assert.strictEqual(store.files.get('.obsidian/plugins/p1/.ow-seeded-version'), '2.0');
+  assert.deepStrictEqual(JSON.parse(store.files.get('.obsidian/community-plugins.json')), [],
+    'upgrade must not re-enable');
+});
+
+test('first install seeds data.json template defaults and enables', async (t) => {
+  const man = { plugins: [{ id: 'p1', version: '1.0', files: ['main.js', 'manifest.json', 'data.json'] }] };
+  const store = makeFakeStore({});
+  t.mock.method(globalThis, 'fetch', fetchStub(man, {
+    'p1/main.js': 'CODE', 'p1/manifest.json': '{"id":"p1"}', 'p1/data.json': '{"template":"defaults"}',
+  }));
+  await seedSystemPlugins(store);
+  assert.strictEqual(store.files.get('.obsidian/plugins/p1/data.json'), '{"template":"defaults"}');
+  assert.deepStrictEqual(JSON.parse(store.files.get('.obsidian/community-plugins.json')), ['p1']);
+});
