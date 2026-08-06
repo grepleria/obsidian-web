@@ -82,6 +82,118 @@ function modeLabel(mode) {
        : mode;
 }
 
+/**
+ * ── PDF context menu (browser) ───────────────────────────────────────────
+ *
+ * The PDF view's onContextMenu — unlike the editor/file-tree handlers —
+ * takes an ELECTRON detour when `win.electron` exists (which obsidian-web's
+ * desktop layout deliberately provides): it awaits an ipcRenderer
+ * "context-menu" round-trip no browser answers (1s timeout, then bail), and
+ * never calls preventDefault() synchronously, because real Electron has no
+ * native context menu to suppress. Net effect in a browser: right-click in
+ * a PDF always got the BROWSER menu, and plugin menu items (e.g. PDF++)
+ * were unreachable by mouse.
+ *
+ * A passive shim cannot fix this (the electron branch bails on
+ * e.defaultPrevented, so a capture-phase preventDefault kills Obsidian's
+ * menu, and without one the browser's always wins). But a plugin is an
+ * ACTIVE participant: suppress the original dispatch entirely, then
+ * re-invoke the view's own handler with `win.electron` TEMPORARILY MASKED —
+ * the handler computes its electron flag in its synchronous first step, so
+ * it takes the non-electron branch, which builds the complete Obsidian menu
+ * synchronously (navigator.clipboard fallbacks are already upstream) and
+ * never consults defaultPrevented. electron is restored in `finally`; the
+ * handler's async continuation uses the already-captured flag, so the
+ * restore cannot race it. If PDF++ (or anything else) wrapped
+ * onContextMenu, we call the wrapped version — their items ride along.
+ *
+ * This replaced a build-time vendor patch (fork PR #9, closed unmerged) —
+ * same branch-steering, but in first-party source with zero-patches intact.
+ */
+
+// Find the PDF viewer component that owns `targetEl`: the object carrying
+// BOTH onContextMenu and onThumbnailContextMenu (a distinctive pair unique
+// to the PDF viewer child) somewhere shallow inside a 'pdf' leaf's view.
+// Bounded BFS over plain-object properties — internal layout (view.viewer
+// .child today) shifts across Obsidian versions; the property PAIR is the
+// stable signature. Returns null when nothing matches (caller degrades to
+// the browser menu, loudly).
+function findPdfViewerComponent(app, targetEl) {
+  const leaves = app.workspace.getLeavesOfType('pdf');
+  for (const leaf of leaves) {
+    const view = leaf.view;
+    if (!view || (view.containerEl && !view.containerEl.contains(targetEl))) continue;
+    const queue = [{ obj: view, depth: 0 }];
+    const seen = new Set();
+    let visited = 0;
+    while (queue.length && visited < 200) {
+      const { obj, depth } = queue.shift();
+      if (!obj || typeof obj !== 'object' || seen.has(obj)) continue;
+      seen.add(obj);
+      visited++;
+      if (typeof obj.onContextMenu === 'function' &&
+          typeof obj.onThumbnailContextMenu === 'function') {
+        return obj;
+      }
+      if (depth >= 4) continue;
+      for (const key of Object.keys(obj)) {
+        const v = obj[key];
+        if (v && typeof v === 'object' && !(v instanceof Node) && v !== window) {
+          queue.push({ obj: v, depth: depth + 1 });
+        }
+      }
+    }
+  }
+  return null;
+}
+
+let pdfMenuWarned = false;
+
+function handlePdfContextMenu(app, evt) {
+  // Only when the desktop layout is active: in mobile layout the vendor
+  // handler bails on !isDesktopApp, and a preventDefault here would leave
+  // the user with NO menu at all instead of the browser's.
+  if (!obsidian.Platform.isDesktopApp) return;
+  const t = evt.target;
+  if (!(t instanceof Element)) return;
+  // Mirror the vendor handler's own scope: inside the viewer, on a page.
+  // (The thumbnail sidebar has its own handler and its own element — not
+  // intercepted here; it keeps today's behaviour.)
+  if (!t.closest('.pdf-viewer-container') || !t.closest('.page')) return;
+
+  const comp = findPdfViewerComponent(app, t);
+  if (!comp) {
+    // Degrade to the browser menu (status quo) — but say so, once: this is
+    // the signal that an Obsidian bump moved the internals and the BFS
+    // signature needs re-deriving.
+    if (!pdfMenuWarned) {
+      pdfMenuWarned = true;
+      console.warn('[obsidian-web-layout] PDF viewer component not found — ' +
+        'right-click falls back to the browser menu. Obsidian internals may ' +
+        'have shifted; re-derive findPdfViewerComponent().');
+    }
+    return;
+  }
+
+  evt.preventDefault();
+  evt.stopImmediatePropagation();
+
+  const win = (t.ownerDocument && t.ownerDocument.defaultView) || window;
+  const savedElectron = win.electron;
+  try {
+    win.electron = undefined;
+    // Async handler; its synchronous first step captures the (masked)
+    // electron flag and, on the non-electron path, builds and shows the
+    // menu before the first await.
+    const p = comp.onContextMenu(evt);
+    if (p && typeof p.catch === 'function') {
+      p.catch((e) => console.warn('[obsidian-web-layout] PDF context menu failed', e));
+    }
+  } finally {
+    win.electron = savedElectron;
+  }
+}
+
 module.exports = class ObsidianWebLayoutPlugin extends obsidian.Plugin {
   async onload() {
     // Only activate on obsidian-web (where __owPlatform exists).
@@ -90,6 +202,12 @@ module.exports = class ObsidianWebLayoutPlugin extends obsidian.Plugin {
       console.log('[obsidian-web-layout] not on obsidian-web — plugin idle');
       return;
     }
+
+    // Capture phase so we run before the vendor's own bubble-phase binding
+    // on .pdf-viewer-container; stopImmediatePropagation prevents a double
+    // dispatch. registerDomEvent scopes teardown to plugin unload.
+    this.registerDomEvent(document, 'contextmenu',
+      (evt) => handlePdfContextMenu(this.app, evt), { capture: true });
 
     const emulating = isEmulateMobileActive();
 
