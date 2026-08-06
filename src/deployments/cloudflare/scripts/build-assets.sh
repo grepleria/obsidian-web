@@ -265,7 +265,11 @@ fi
 TEMPLATE_ENTRIES="[]"
 if [[ -n "${OW_TEMPLATE_VAULT_DIR:-}" ]]; then
   echo "  bundling template plugins from $OW_TEMPLATE_VAULT_DIR ..."
-  TEMPLATE_ENTRIES=$(node "$MAIN_DIR/scripts/collect-template-plugins.js" "$OW_TEMPLATE_VAULT_DIR" "$PUBLIC_DIR/system-plugins")
+  # config.webPlugins (deployment-owned allowlist, layering-design.md §7b):
+  # null renders as the literal string "null" → unset env → no filter.
+  WEB_PLUGINS=$(node -p "JSON.stringify(require('$CONFIG_PATH').webPlugins) || ''")
+  [[ "$WEB_PLUGINS" == "null" ]] && WEB_PLUGINS=""
+  TEMPLATE_ENTRIES=$(OW_WEB_PLUGINS="$WEB_PLUGINS" node "$MAIN_DIR/scripts/collect-template-plugins.js" "$OW_TEMPLATE_VAULT_DIR" "$PUBLIC_DIR/system-plugins")
 fi
 
 # manifest.json — finding 2: env מיוצא inline לפני node -e (אחרת process.env undefined → abort)

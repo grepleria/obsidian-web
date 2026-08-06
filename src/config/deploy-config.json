@@ -21,6 +21,7 @@
   },
   "provision": null,
   "corePlugins": null,
+  "webPlugins": null,
   "branding": {
     "name": "Obsidian Web",
     "themeColor": "#1e1e1e"
