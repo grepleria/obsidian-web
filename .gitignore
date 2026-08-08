@@ -51,3 +51,4 @@ reports/
 # (.obsidian/plugins/*/data.json).
 user-data/*/
 !user-data/demo-vault/
+dist/
