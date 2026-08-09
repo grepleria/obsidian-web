@@ -314,3 +314,76 @@ test('guard: stale failures age out of the sliding window', async () => {
   await guard.fetch(SYNC);                             // fail at t=20001; t=0 aged out
   assert.equal(guard.state().state, 0);               // only 1 in-window → not tripped
 });
+
+// ---------------------------------------------------------------------------
+// migrated-connection strip + forced reseed (rotation reaching migrated
+// replicas — the vaulte2e 2026-08-09 401-forever case)
+// ---------------------------------------------------------------------------
+const FORCED_MARKER = '.obsidian/plugins/obsidian-livesync/.ow-forced-reseed-rev';
+
+test('seed strips the plugin-migrated encrypted connection', async () => {
+  const store = makeFakeStore({
+    [DATA]: JSON.stringify({
+      deviceAndVaultName: 'web-keepme',
+      activeConfigurationId: 'legacy-couchdb',
+      remoteConfigurations: { 'legacy-couchdb': { uri: '%$OLDENC' } },
+      encryptedCouchDBConnection: '%$OLDENC',
+      encryptedPassphrase: '%$OLDENC',
+      configPassphraseStore: '',
+      customUserSetting: 42,
+    }),
+  });
+  stubFetch(() => ok(PAYLOAD));
+  assert.equal(await seedLivesyncConfig(store, { configUrl: '/livesync-config.json' }), true);
+  const data = JSON.parse(store.files.get(DATA));
+  for (const k of ['remoteConfigurations', 'activeConfigurationId',
+    'encryptedCouchDBConnection', 'encryptedPassphrase', 'configPassphraseStore']) {
+    assert.ok(!(k in data), k + ' should be stripped');
+  }
+  assert.equal(data.couchDB_PASSWORD, 'pw');            // served creds win
+  assert.equal(data.deviceAndVaultName, 'web-keepme');  // identity preserved
+  assert.equal(data.customUserSetting, 42);             // unrelated keys kept
+});
+
+test('forced check reseeds ONCE per rev when marker is current', async () => {
+  const store = makeFakeStore({});
+  stubFetch(() => ok(PAYLOAD));
+  await seedLivesyncConfig(store, { configUrl: '/livesync-config.json' }); // marker=rev1
+  // simulate the plugin re-migrating stale creds after the seed
+  const mig = JSON.parse(store.files.get(DATA));
+  mig.activeConfigurationId = 'legacy-couchdb';
+  mig.encryptedCouchDBConnection = '%$STALE';
+  store.files.set(DATA, JSON.stringify(mig));
+
+  let reloads = 0;
+  // 1st forced check: marker == rev, but force → reseed + reload
+  let res = await checkRevOnce(store, { configUrl: '/livesync-config.json' }, () => { reloads++; }, true);
+  assert.equal(res, 'reloaded');
+  assert.equal(reloads, 1);
+  assert.equal(store.files.get(FORCED_MARKER), 'rev1');
+  assert.ok(!('encryptedCouchDBConnection' in JSON.parse(store.files.get(DATA))));
+
+  // 2nd forced check under the SAME rev: no reseed, no reload (loop guard)
+  res = await checkRevOnce(store, { configUrl: '/livesync-config.json' }, () => { reloads++; }, true);
+  assert.equal(res, 'unchanged');
+  assert.equal(reloads, 1);
+});
+
+test('forced check on a NEVER-seeded vault stays inert', async () => {
+  const store = makeFakeStore({});
+  stubFetch(() => ok(PAYLOAD));
+  const res = await checkRevOnce(store, { configUrl: '/livesync-config.json' }, () => {}, true);
+  assert.equal(res, 'unchanged');
+  assert.equal(store.files.size, 0);
+});
+
+test('plain rev drift still reseeds and clears the way for future forces', async () => {
+  const store = makeFakeStore({});
+  stubFetch(() => ok(PAYLOAD));
+  await seedLivesyncConfig(store, { configUrl: '/livesync-config.json' });
+  stubFetch(() => ok({ rev: 'rev2', livesync: Object.assign({}, PAYLOAD.livesync, { couchDB_PASSWORD: 'new' }) }));
+  let reloads = 0;
+  const res = await checkRevOnce(store, { configUrl: '/livesync-config.json' }, () => { reloads++; });
+  assert.equal(res, 'reloaded');
+  assert.equal(JSON.parse(store.files.get(DATA)).couchDB_PASSWORD, 'new');
+});
