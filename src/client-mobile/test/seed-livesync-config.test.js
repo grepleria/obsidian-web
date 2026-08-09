@@ -209,3 +209,108 @@ test('endpoint failure during a watch tick is non-fatal', async () => {
   global.fetch = async () => { throw new Error('offline'); };
   assert.equal(await checkRevOnce(store, { configUrl: '/livesync-config.json' }, () => {}), 'skipped');
 });
+
+// ---------------------------------------------------------------------------
+// createSyncGuard — the window.fetch wrapper (event-driven rev-check + the
+// client-side circuit breaker that keeps a stale tab from tripping CouchDB's
+// shared-account lockout). Driven under a fake clock + fake fetch.
+// ---------------------------------------------------------------------------
+const { createSyncGuard, urlOf } = require('../seed-livesync-config');
+
+function makeGuard(overrides) {
+  const o = overrides || {};
+  const state = { t: 0, calls: [], revChecks: 0, reply: () => ({ status: 200, ok: true }) };
+  const mkResp = (body, init) => ({ status: init.status, ok: init.status >= 200 && init.status < 300, body, headers: init.headers, __synthetic: true });
+  const guard = createSyncGuard({
+    fetch: (url) => { state.calls.push(urlOf(url)); const r = state.reply(url); return Promise.resolve(r); },
+    now: () => state.t,
+    onRevCheck: () => { state.revChecks++; },
+    makeResponse: mkResp,
+    config: Object.assign({ threshold: 2, windowMs: 20000, cooldownMs: 120000, revDebounceMs: 2000 }, o),
+  });
+  return { guard, state };
+}
+const SYNC = 'https://obsidian--w--o.example/sync/db_x/_revs_diff';
+
+test('guard: non-sync URLs pass straight through, never counted', async () => {
+  const { guard, state } = makeGuard();
+  state.reply = () => ({ status: 401, ok: false });
+  for (let i = 0; i < 10; i++) await guard.fetch('https://obsidian--w--o.example/api/fs/stat?path=x');
+  assert.equal(state.calls.length, 10);
+  assert.equal(guard.state().state, 0);           // still CLOSED
+  assert.equal(state.revChecks, 0);
+});
+
+test('guard: 401 fires a debounced rev-check', async () => {
+  const { guard, state } = makeGuard({ threshold: 10 }); // high threshold isolates debounce from the breaker
+  state.reply = () => ({ status: 401, ok: false });
+  await guard.fetch(SYNC);
+  assert.equal(state.revChecks, 1);
+  await guard.fetch(SYNC);                          // same instant → debounced away
+  assert.equal(state.revChecks, 1);
+  state.t += 3000;
+  await guard.fetch(SYNC);
+  assert.equal(state.revChecks, 2);
+});
+
+test('guard: breaker trips below CouchDB threshold and short-circuits (no network)', async () => {
+  const { guard, state } = makeGuard();               // threshold 2
+  state.reply = () => ({ status: 401, ok: false });
+  await guard.fetch(SYNC);                             // fail 1 (network hit)
+  await guard.fetch(SYNC);                             // fail 2 → OPEN
+  assert.equal(guard.state().state, 1);
+  const before = state.calls.length;
+  const r = await guard.fetch(SYNC);                  // short-circuited
+  assert.equal(state.calls.length, before);           // NO extra network call
+  assert.equal(r.status, 503);
+  assert.ok(state.calls.length <= 2, 'CouchDB saw fewer than its 5-failure threshold');
+});
+
+test('guard: half-open lets exactly one probe through, others short-circuit', async () => {
+  const { guard, state } = makeGuard();
+  state.reply = () => ({ status: 401, ok: false });
+  await guard.fetch(SYNC); await guard.fetch(SYNC);    // OPEN
+  state.t += 120001;                                   // cooldown elapsed → HALF
+  const n = state.calls.length;
+  // first request probes (hits network), still 401 → re-OPEN with doubled cooldown
+  await guard.fetch(SYNC);
+  assert.equal(state.calls.length, n + 1);
+  assert.equal(guard.state().state, 1);
+  assert.equal(guard.state().cooldown, 240000);       // backoff doubled
+  const n2 = state.calls.length;
+  await guard.fetch(SYNC);                             // OPEN again → short-circuit
+  assert.equal(state.calls.length, n2);
+});
+
+test('guard: a successful probe closes the breaker and resets backoff', async () => {
+  const { guard, state } = makeGuard();
+  state.reply = () => ({ status: 401, ok: false });
+  await guard.fetch(SYNC); await guard.fetch(SYNC);    // OPEN
+  state.t += 120001;                                   // HALF
+  state.reply = () => ({ status: 200, ok: true });     // credential now good
+  await guard.fetch(SYNC);                             // probe succeeds → CLOSED
+  assert.equal(guard.state().state, 0);
+  assert.equal(guard.state().cooldown, 120000);       // reset
+  assert.equal(guard.state().fails, 0);
+});
+
+test('guard: a success in CLOSED clears the failure window', async () => {
+  const { guard, state } = makeGuard({ threshold: 3 });
+  state.reply = () => ({ status: 401, ok: false });
+  await guard.fetch(SYNC);                             // fail 1
+  state.reply = () => ({ status: 200, ok: true });
+  await guard.fetch(SYNC);                             // success resets
+  assert.equal(guard.state().fails, 0);
+  state.reply = () => ({ status: 401, ok: false });
+  await guard.fetch(SYNC);
+  assert.equal(guard.state().state, 0);               // one fresh failure, still CLOSED
+});
+
+test('guard: stale failures age out of the sliding window', async () => {
+  const { guard, state } = makeGuard({ threshold: 2, windowMs: 20000 });
+  state.reply = () => ({ status: 401, ok: false });
+  await guard.fetch(SYNC);                             // fail at t=0
+  state.t += 20001;                                    // older than window
+  await guard.fetch(SYNC);                             // fail at t=20001; t=0 aged out
+  assert.equal(guard.state().state, 0);               // only 1 in-window → not tripped
+});
