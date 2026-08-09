@@ -196,9 +196,144 @@
     return true;
   }
 
+  // ---------------------------------------------------------------------------
+  // Sync-failure guard — event-driven defence against the shared-credential
+  // CouchDB lockout, complementing the interval watchdog above.
+  //
+  // TRANSPORT (verified against the shipped obsidian-livesync 1.0.0 bundle):
+  // replication builds PouchDB with a custom fetch that, on this platform
+  // (useRequestAPI=false; nativeFetch throws "not implemented"; zero XHR),
+  // calls `_fetch = window.fetch.bind(window)`. So wrapping window.fetch —
+  // before the plugin captures that bound reference, which a plain <script>
+  // in index.html always is — sees EVERY replication request and its status.
+  //
+  // On a 401/403 to the sync path it does two things:
+  //   1. debounced rev re-check (checkRevOnce) — the ROTATION case: re-seed +
+  //      reload onto the new credential on the first failure, not on the next
+  //      5-minute tick.
+  //   2. a client-side circuit breaker — the PERSISTENT-STALE case (rev
+  //      unchanged: a deleted account, or an already-locked pair). After a low
+  //      threshold of failures it stops sending sync requests (synthetic 503,
+  //      no network) for a cooldown, half-opening a single probe afterwards.
+  //      CouchDB's own lockout trips at 5 failures per (user, IP); tripping
+  //      ours BELOW that and going silent lets the server-side counter age out,
+  //      so the SHARED ws_* credential is never locked for the healthy
+  //      replicas (the desktop node, other browsers). This is the piece the
+  //      interval watchdog cannot provide — it prevents the lockout rather
+  //      than only recovering from a rotation faster.
+  //
+  // Testable core: createSyncGuard(deps) with injected fetch/now/onRevCheck so
+  // the state machine is exercised under a fake clock without a browser.
+
+  function urlOf(input) {
+    if (typeof input === 'string') return input;
+    if (input && typeof input.url === 'string') return input.url;
+    try { return String(input); } catch (_) { return ''; }
+  }
+
+  function createSyncGuard(deps) {
+    var fetchImpl = deps.fetch;
+    var nowFn = deps.now || function () { return Date.now(); };
+    var onRevCheck = deps.onRevCheck || function () {};
+    var mkResp = deps.makeResponse || function (body, init) { return new Response(body, init); };
+    var cfg = deps.config || {};
+    var pathPrefix = cfg.pathPrefix || '/sync/';   // the couch proxy path (only provisioned origins serve it)
+    var threshold = cfg.threshold || 2;            // failures within windowMs that trip the breaker (< couch's 5)
+    var windowMs = cfg.windowMs || 20000;
+    var baseCooldownMs = cfg.cooldownMs || 120000; // silent period; > couch max_lifetime/… kept modest, backs off
+    var cooldownCapMs = cfg.cooldownCapMs || 600000;
+    var revDebounceMs = cfg.revDebounceMs || 2000;
+
+    var CLOSED = 0, OPEN = 1, HALF = 2;
+    var state = CLOSED;
+    var openUntil = 0;
+    var cooldown = baseCooldownMs;
+    var failTimes = [];
+    var probeInFlight = false;
+    var lastRev = -Infinity;
+
+    function isSync(u) {
+      try { return new URL(u, 'http://ow.local').pathname.indexOf(pathPrefix) === 0; }
+      catch (_) { return false; }
+    }
+    function authFail(res) { return !!res && (res.status === 401 || res.status === 403); }
+    function shortCircuit() {
+      return mkResp('{"error":"unavailable","reason":"ow-sync-guard: cooling down after repeated auth failures"}',
+        { status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': String(Math.ceil(cooldown / 1000)) } });
+    }
+    function debouncedRev() {
+      var t = nowFn();
+      if (t - lastRev >= revDebounceMs) { lastRev = t; try { onRevCheck(); } catch (_) {} }
+    }
+    function openBreaker() { state = OPEN; openUntil = nowFn() + cooldown; failTimes = []; }
+    function closeBreaker() { state = CLOSED; openUntil = 0; cooldown = baseCooldownMs; failTimes = []; }
+
+    function wrapped(input, init) {
+      var u = urlOf(input);
+      if (!isSync(u)) return fetchImpl(input, init);
+      var t = nowFn();
+
+      if (state === OPEN) {
+        if (t < openUntil) return Promise.resolve(shortCircuit());
+        state = HALF;                                   // cooldown elapsed → allow one probe
+      }
+      if (state === HALF) {
+        if (probeInFlight) return Promise.resolve(shortCircuit());
+        probeInFlight = true;
+        return fetchImpl(input, init).then(function (res) {
+          probeInFlight = false;
+          if (authFail(res)) { cooldown = Math.min(cooldownCapMs, cooldown * 2); openBreaker(); debouncedRev(); }
+          else if (res && res.ok) { closeBreaker(); }
+          return res;
+        }, function (err) { probeInFlight = false; openBreaker(); throw err; });
+      }
+      // CLOSED
+      return fetchImpl(input, init).then(function (res) {
+        if (authFail(res)) {
+          failTimes.push(t);
+          failTimes = failTimes.filter(function (x) { return t - x <= windowMs; });
+          debouncedRev();
+          if (failTimes.length >= threshold) openBreaker();
+        } else if (res && res.ok) {
+          failTimes = [];
+        }
+        return res;
+      });
+    }
+
+    return {
+      fetch: wrapped,
+      state: function () { return { state: state, openUntil: openUntil, cooldown: cooldown, fails: failTimes.length, probeInFlight: probeInFlight }; }
+    };
+  }
+
+  // Install the wrapper on the real window.fetch, once, at script-load (before
+  // the plugin bundle captures its bound _fetch). The rev-check action is
+  // wired later by boot.js via arm() — once it has the OPFS store + provision
+  // opts — so an auth failure before arming still gets breaker protection and
+  // simply skips the reload until armed.
+  function installSyncGuard(global) {
+    if (!global || typeof global.fetch !== 'function' || global.__owSyncGuardInstalled) return null;
+    global.__owSyncGuardInstalled = true;
+    var pending = { onRevCheck: function () {} };
+    var guard = createSyncGuard({
+      fetch: global.fetch.bind(global),
+      onRevCheck: function () { pending.onRevCheck(); },
+      config: (global.__owConfig && global.__owConfig.syncGuard) || {}
+    });
+    global.fetch = guard.fetch;
+    global.__owSyncGuard = {
+      arm: function (fn) { if (typeof fn === 'function') pending.onRevCheck = fn; },
+      state: guard.state
+    };
+    return global.__owSyncGuard;
+  }
+
+  if (typeof window !== 'undefined') installSyncGuard(window);
+
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { seedLivesyncConfig, checkRevOnce, startRevWatch };
+    module.exports = { seedLivesyncConfig, checkRevOnce, startRevWatch, createSyncGuard, urlOf };
   } else if (typeof window !== 'undefined') {
-    window.__owSeedLivesyncConfig = { seedLivesyncConfig, checkRevOnce, startRevWatch };
+    window.__owSeedLivesyncConfig = { seedLivesyncConfig, checkRevOnce, startRevWatch, createSyncGuard };
   }
 })();

@@ -1468,6 +1468,18 @@ const MOBILE_SCRIPTS = [
           // once; inert without provision.configUrl.
           window.__owSeedLivesyncConfig.startRevWatch(
             seedStore, window.__owConfig.provision);
+          // Arm the sync-failure guard (window.fetch wrapper installed at
+          // script-load) with the rev-check action: on a 401/403 from the sync
+          // path it re-checks the served config and reloads on drift — the
+          // event-driven complement to the interval watchdog — while its
+          // circuit breaker stops a stale tab from tripping CouchDB's
+          // shared-account lockout. Inert until armed here.
+          if (window.__owSyncGuard) {
+            window.__owSyncGuard.arm(function () {
+              window.__owSeedLivesyncConfig.checkRevOnce(
+                seedStore, window.__owConfig.provision).catch(function () {});
+            });
+          }
         } catch (e) { console.warn('[ow] seed livesync config failed', e); }
       }
 
