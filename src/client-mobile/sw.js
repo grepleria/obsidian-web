@@ -19,6 +19,17 @@
 const BUILD_ID = '__OW_BUILD__';       // מוזרק: CF=build-assets sed; מקומי=server מזריק clientCacheBust
 const CACHE = 'ow-sw-' + BUILD_ID;
 
+// Wrap a request so its network fetch REVALIDATES against the server instead
+// of trusting the browser HTTP cache (the shell scripts are un-versioned
+// URLs; heuristic freshness can serve a previous build's bytes without a
+// round-trip). Request re-construction rejects mode:'navigate' — navigation
+// is handled by its own branch (index.html is no-cache server-side); any
+// other constructor failure falls back to the original request.
+function revalidating(req) {
+  try { return new Request(req, { cache: 'no-cache' }); }
+  catch (_) { return req; }
+}
+
 // ── /_owres/ vault-resource serving — spike findings (§0.1, executor, before
 // implementation) — docs/plans/sw-vault-resources.md §3.
 //
@@ -236,7 +247,7 @@ self.addEventListener('fetch', (e) => {
   // worker.js/sim.js → network-first (finding 2: indexer רגיש; online=טרי, offline=cache)
   if (url.pathname === '/worker.js' || url.pathname === '/sim.js') {
     e.respondWith(caches.open(CACHE).then(c =>
-      fetch(req).then(res => { if (res && res.status === 200) c.put(req, res.clone()); return res; })
+      fetch(revalidating(req)).then(res => { if (res && res.status === 200) c.put(req, res.clone()); return res; })
                 .catch(() => c.match(req))));
     return;
   }
@@ -244,7 +255,14 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(caches.open(CACHE).then(async (c) => {
     const hit = await c.match(req);
     if (hit) return hit;
-    const res = await fetch(req);
+    // Cache-poison guard: a plain fetch() here consults the browser HTTP
+    // cache, which (heuristic freshness on the un-versioned shell scripts)
+    // can hand back the PREVIOUS build's bytes — pinning a mixed old/new
+    // shell under this build's cache key for its whole lifetime. Observed
+    // live 2026-08-09: renderer/shim mismatch after a redeploy presented as
+    // "all community plugins disabled". cache:'no-cache' forces conditional
+    // revalidation (ETag → cheap 304 when truly current).
+    const res = await fetch(revalidating(req));
     if (res && res.status === 200) c.put(req, res.clone());
     return res;
   }));
