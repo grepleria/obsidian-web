@@ -138,9 +138,67 @@
     return true;
   }
 
+  /**
+   * Rev watchdog — the boot-time seed only reaches a page that RELOADS. A
+   * long-lived tab keeps replicating with the credentials it booted with, so
+   * a workspace recreate (rotated couch password → new served rev) leaves the
+   * open replica 401-ing until a manual hard refresh (observed live on the
+   * vaulte2e delete→recreate test, 2026-08-09). This polls the same endpoint
+   * on tab focus + a slow interval; on rev DRIFT it re-runs the seeder (same
+   * merge + marker semantics) and reloads the page so the plugin boots with
+   * the new credentials. A never-seeded vault (no marker) stays boot's job —
+   * the watchdog only chases rotation, never first provisioning.
+   *
+   * @returns 'skipped'   — not provisioned / endpoint unavailable / bad shape
+   *          'unchanged' — no marker yet, or served rev matches
+   *          'reloaded'  — drift: re-seeded and triggered reload
+   */
+  async function checkRevOnce(store, opts, reload) {
+    var cfgUrl = opts && opts.configUrl;
+    if (!cfgUrl) return 'skipped';
+    var url = cfgUrl + (cfgUrl.indexOf('?') === -1 ? '?' : '&') + 'ow=' + Date.now();
+    var payload = null;
+    try {
+      var resp = await fetch(url, { cache: 'no-store', credentials: 'same-origin' });
+      if (!resp || !resp.ok) return 'skipped';
+      payload = await resp.json();
+    } catch (_) { return 'skipped'; }
+    if (!payload || !payload.livesync) return 'skipped';
+
+    var rev = String(payload.rev == null ? '' : payload.rev);
+    var seen = null;
+    try { seen = (await store.readFile({ path: MARKER, encoding: 'utf8' })).data; } catch (_) {}
+    if (seen === null || seen === rev) return 'unchanged';
+
+    var wrote = await seedLivesyncConfig(store, opts);
+    if (wrote) {
+      console.log('[ow] livesync config rev drift (' + seen + ' -> ' + rev + '): re-seeded, reloading');
+      (reload || function () { location.reload(); })();
+      return 'reloaded';
+    }
+    return 'unchanged';
+  }
+
+  var WATCH_MS = 5 * 60 * 1000;
+  var _watchInstalled = false;
+
+  /** Install the focus + interval watchdog once. Inert when not provisioned. */
+  function startRevWatch(store, opts) {
+    if (_watchInstalled || !(opts && opts.configUrl)) return false;
+    _watchInstalled = true;
+    var tick = function () { checkRevOnce(store, opts).catch(function () {}); };
+    setInterval(tick, WATCH_MS);
+    if (typeof document !== 'undefined' && document.addEventListener) {
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) tick();
+      });
+    }
+    return true;
+  }
+
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { seedLivesyncConfig };
+    module.exports = { seedLivesyncConfig, checkRevOnce, startRevWatch };
   } else if (typeof window !== 'undefined') {
-    window.__owSeedLivesyncConfig = { seedLivesyncConfig };
+    window.__owSeedLivesyncConfig = { seedLivesyncConfig, checkRevOnce, startRevWatch };
   }
 })();
