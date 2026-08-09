@@ -1461,6 +1461,13 @@ const MOBILE_SCRIPTS = [
         try {
           await window.__owSeedLivesyncConfig.seedLivesyncConfig(
             seedStore, window.__owConfig.provision);
+          // Rev watchdog: a long-lived tab never re-runs this boot path, so a
+          // credential rotation (workspace recreate -> new served rev) leaves
+          // it replicating with dead credentials until a manual hard refresh.
+          // Focus/interval re-check; re-seed + reload on rev drift. Installed
+          // once; inert without provision.configUrl.
+          window.__owSeedLivesyncConfig.startRevWatch(
+            seedStore, window.__owConfig.provision);
         } catch (e) { console.warn('[ow] seed livesync config failed', e); }
       }
 

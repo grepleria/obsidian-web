@@ -155,3 +155,57 @@ test('cache-busts the config fetch (stale-service-worker guard)', async () => {
   assert.equal(calls[0].opts.cache, 'no-store');
   assert.equal(calls[0].opts.credentials, 'same-origin');
 });
+
+// ---------------------------------------------------------------------------
+// checkRevOnce — the rev watchdog behind startRevWatch (long-lived tabs:
+// credential rotation must re-seed + reload without a manual hard refresh)
+// ---------------------------------------------------------------------------
+const { checkRevOnce } = require('../seed-livesync-config');
+
+test('rev drift re-seeds and reloads', async () => {
+  const store = makeFakeStore({});
+  stubFetch(() => ok(PAYLOAD));
+  await seedLivesyncConfig(store, { configUrl: '/livesync-config.json' }); // marker=rev1
+
+  stubFetch(() => ok({
+    rev: 'rev2',
+    livesync: Object.assign({}, PAYLOAD.livesync, { couchDB_PASSWORD: 'rotated' }),
+  }));
+  let reloaded = 0;
+  const res = await checkRevOnce(store, { configUrl: '/livesync-config.json' }, () => { reloaded++; });
+  assert.equal(res, 'reloaded');
+  assert.equal(reloaded, 1);
+  assert.equal(store.files.get(MARKER), 'rev2');
+  const data = JSON.parse(store.files.get(DATA));
+  assert.equal(data.couchDB_PASSWORD, 'rotated');
+});
+
+test('unchanged rev neither writes nor reloads', async () => {
+  const store = makeFakeStore({});
+  stubFetch(() => ok(PAYLOAD));
+  await seedLivesyncConfig(store, { configUrl: '/livesync-config.json' });
+  const before = store.files.get(DATA);
+
+  let reloaded = 0;
+  stubFetch(() => ok(PAYLOAD));
+  const res = await checkRevOnce(store, { configUrl: '/livesync-config.json' }, () => { reloaded++; });
+  assert.equal(res, 'unchanged');
+  assert.equal(reloaded, 0);
+  assert.equal(store.files.get(DATA), before);
+});
+
+test('never-seeded vault (no marker) is left to the boot path', async () => {
+  const store = makeFakeStore({});
+  stubFetch(() => ok(PAYLOAD));
+  let reloaded = 0;
+  const res = await checkRevOnce(store, { configUrl: '/livesync-config.json' }, () => { reloaded++; });
+  assert.equal(res, 'unchanged');
+  assert.equal(reloaded, 0);
+  assert.equal(store.files.size, 0);
+});
+
+test('endpoint failure during a watch tick is non-fatal', async () => {
+  const store = makeFakeStore({});
+  global.fetch = async () => { throw new Error('offline'); };
+  assert.equal(await checkRevOnce(store, { configUrl: '/livesync-config.json' }, () => {}), 'skipped');
+});
