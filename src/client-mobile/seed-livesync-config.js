@@ -64,7 +64,7 @@
    * @param opts   {configUrl}  — required; caller passes window.__owConfig.provision
    * @returns true when it wrote a config this call, false when it skipped.
    */
-  async function seedLivesyncConfig(store, opts) {
+  async function seedLivesyncConfig(store, opts, force) {
     var cfgUrl = opts && opts.configUrl;
     if (!cfgUrl) return false;                      // not a provisioned deployment
 
@@ -94,7 +94,7 @@
     var rev = String(payload.rev == null ? '' : payload.rev);
     var seen = null;
     try { seen = (await store.readFile({ path: MARKER, encoding: 'utf8' })).data; } catch (_) {}
-    if (seen !== null && seen === rev) return false;
+    if (!force && seen !== null && seen === rev) return false;
 
     // Preserve any existing local settings (device name, UI prefs) and let the
     // served config win on the keys it specifies.
@@ -112,6 +112,18 @@
     for (k in payload.livesync) {
       if (Object.prototype.hasOwnProperty.call(payload.livesync, k)) merged[k] = payload.livesync[k];
     }
+
+    // The plugin MIGRATES its connection into an encrypted remoteConfigurations
+    // entry (activeConfigurationId -> encryptedCouchDBConnection) shortly after
+    // first run — and then READS THAT, not the plaintext couchDB_* fields. A
+    // re-seed that only rewrites the plaintext leaves a rotated-away password
+    // active inside the encrypted entry: the replica 401s forever while the
+    // marker says it is current (observed live, vaulte2e 2026-08-09). Strip
+    // the migrated set so the plugin re-reads plaintext and re-migrates with
+    // the fresh credentials.
+    var MIGRATED = ['remoteConfigurations', 'activeConfigurationId',
+      'encryptedCouchDBConnection', 'encryptedPassphrase', 'configPassphraseStore'];
+    for (var mi = 0; mi < MIGRATED.length; mi++) delete merged[MIGRATED[mi]];
 
     // Every browser replica needs its own identity, or peers collide in the
     // remote DB's device list. Generated once and preserved across re-seeds.
@@ -153,7 +165,9 @@
    *          'unchanged' — no marker yet, or served rev matches
    *          'reloaded'  — drift: re-seeded and triggered reload
    */
-  async function checkRevOnce(store, opts, reload) {
+  var FORCED_MARKER = '.obsidian/plugins/obsidian-livesync/.ow-forced-reseed-rev';
+
+  async function checkRevOnce(store, opts, reload, force) {
     var cfgUrl = opts && opts.configUrl;
     if (!cfgUrl) return 'skipped';
     var url = cfgUrl + (cfgUrl.indexOf('?') === -1 ? '?' : '&') + 'ow=' + Date.now();
@@ -168,9 +182,22 @@
     var rev = String(payload.rev == null ? '' : payload.rev);
     var seen = null;
     try { seen = (await store.readFile({ path: MARKER, encoding: 'utf8' })).data; } catch (_) {}
-    if (seen === null || seen === rev) return 'unchanged';
+    var doForce = false;
+    if (seen === null || seen === rev) {
+      // Marker current — normally nothing to do. But when the caller saw AUTH
+      // FAILURES (force), a current marker means the OPFS settings themselves
+      // are stale relative to working credentials (the migrated-connection
+      // case). Force ONE re-seed per rev value — persisted, so a still-broken
+      // credential can never reload-loop.
+      if (!force || seen === null) return 'unchanged';
+      var forcedFor = null;
+      try { forcedFor = (await store.readFile({ path: FORCED_MARKER, encoding: 'utf8' })).data; } catch (_) {}
+      if (forcedFor === rev) return 'unchanged';
+      await store.writeFile({ path: FORCED_MARKER, data: rev, encoding: 'utf8' });
+      doForce = true;
+    }
 
-    var wrote = await seedLivesyncConfig(store, opts);
+    var wrote = await seedLivesyncConfig(store, opts, doForce);
     if (wrote) {
       console.log('[ow] livesync config rev drift (' + seen + ' -> ' + rev + '): re-seeded, reloading');
       (reload || function () { location.reload(); })();

@@ -1476,8 +1476,11 @@ const MOBILE_SCRIPTS = [
           // shared-account lockout. Inert until armed here.
           if (window.__owSyncGuard) {
             window.__owSyncGuard.arm(function () {
+              // force=true: an auth failure with a CURRENT marker means the
+              // OPFS settings are stale relative to working credentials (the
+              // plugin's migrated encrypted connection) — reseed once per rev.
               window.__owSeedLivesyncConfig.checkRevOnce(
-                seedStore, window.__owConfig.provision).catch(function () {});
+                seedStore, window.__owConfig.provision, undefined, true).catch(function () {});
             });
           }
         } catch (e) { console.warn('[ow] seed livesync config failed', e); }
